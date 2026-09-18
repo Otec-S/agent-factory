@@ -1,10 +1,12 @@
 import { writeFileSync } from 'node:fs';
 import { z } from 'zod';
-import { query } from '@anthropic-ai/claude-agent-sdk';
-import type { LensFinding, LensName, Task } from '../types.js';
+import type { LensFinding, LensName, Task, TokenUsage } from '../types.js';
 import { runDirPaths } from '../runDir.js';
 import { buildLensPrompt, FINDINGS_JSON_SCHEMA } from './lenses.js';
 import { makeLogger } from '../logger.js';
+import { runAgentQuery } from '../agentQuery.js';
+import { serveChild } from '../childProcess.js';
+import { ZERO_USAGE } from '../usage.js';
 
 const FindingSchema = z.object({
   title: z.string().min(1),
@@ -25,7 +27,7 @@ export type LensRunnerResult = {
   lens: LensName;
   ok: boolean;
   findingsCount: number;
-  usage: { inputTokens: number; outputTokens: number };
+  usage: TokenUsage;
   error?: string;
 };
 
@@ -34,44 +36,29 @@ export type LensRunnerResult = {
  * файла находок в run_dir. Оркестратору возвращается только путь/счётчик,
  * не сами находки — контекст оркестратора остаётся чистым.
  */
-export async function runLens(input: LensRunnerInput): Promise<LensRunnerResult> {
+export async function runLens(input: LensRunnerInput, abortController = new AbortController()): Promise<LensRunnerResult> {
   const { lens, workdir, runDir, tasks } = input;
   const log = makeLogger(`lens:${lens}`);
   const paths = runDirPaths(runDir);
+  let usage = ZERO_USAGE;
 
   try {
     const { systemPrompt, prompt } = buildLensPrompt(lens, runDir, workdir, tasks);
 
-    const q = query({
-      prompt,
-      options: {
-        systemPrompt,
-        tools: [],
-        maxTurns: 4,
-        outputFormat: { type: 'json_schema', schema: FINDINGS_JSON_SCHEMA },
-      },
+    const result = await runAgentQuery(`lens ${lens}`, prompt, {
+      systemPrompt,
+      tools: [],
+      maxTurns: 4,
+      outputFormat: { type: 'json_schema', schema: FINDINGS_JSON_SCHEMA },
+      abortController,
     });
+    usage = result.usage;
 
-    let raw: unknown;
-    let usage = { inputTokens: 0, outputTokens: 0 };
-    for await (const message of q) {
-      if (message.type === 'result') {
-        if (message.subtype !== 'success') {
-          throw new Error(`lens query завершился с ошибкой: ${message.subtype}`);
-        }
-        raw = message.structured_output;
-        for (const m of Object.values(message.modelUsage)) {
-          usage = { inputTokens: usage.inputTokens + m.inputTokens, outputTokens: usage.outputTokens + m.outputTokens };
-        }
-      }
-    }
+    // Невалидный вывод — это сбой линзы, а не "замечаний нет": иначе отчёт выглядел бы чистым.
+    const parsed = FindingsSchema.safeParse(result.structuredOutput);
+    if (!parsed.success) throw new Error(`невалидный вывод модели: ${parsed.error.message}`);
 
-    const parsed = FindingsSchema.safeParse(raw);
-    const findings: LensFinding[] = parsed.success ? parsed.data.findings : [];
-    if (!parsed.success) {
-      log.warn(`невалидный вывод модели, считаю находки пустыми: ${parsed.error.message}`);
-    }
-
+    const findings: LensFinding[] = parsed.data.findings;
     writeFileSync(paths.lensFile(lens), JSON.stringify(findings, null, 2), 'utf-8');
     log.info(`найдено ${findings.length} находок`);
 
@@ -80,14 +67,8 @@ export async function runLens(input: LensRunnerInput): Promise<LensRunnerResult>
     const message = err instanceof Error ? err.message : String(err);
     log.error(message);
     writeFileSync(paths.lensFile(lens), JSON.stringify([], null, 2), 'utf-8');
-    return { lens, ok: false, findingsCount: 0, usage: { inputTokens: 0, outputTokens: 0 }, error: message };
+    return { lens, ok: false, findingsCount: 0, usage, error: message };
   }
 }
 
-if (typeof process.send === 'function') {
-  process.once('message', async (input: LensRunnerInput) => {
-    const result = await runLens(input);
-    process.send!(result);
-    process.exit(result.ok ? 0 : 1);
-  });
-}
+serveChild<LensRunnerInput, LensRunnerResult>(runLens, (r) => (r.ok ? 0 : 1));

@@ -6,5 +6,3 @@ export function makeLogger(prefix: string) {
     error: (msg: string) => console.error(`${tag} ${msg}`),
   };
 }
-
-export type Logger = ReturnType<typeof makeLogger>;

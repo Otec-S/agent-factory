@@ -16,7 +16,7 @@ export class StateStore {
     this.state = state;
   }
 
-  static init(runDir: string, opts: { parallel: boolean; workdir: string; taskDescription: string }): StateStore {
+  static init(runDir: string, opts: { parallel: boolean; workdir: string; taskDescription: string; baseTree: string }): StateStore {
     const { stateFile } = runDirPaths(runDir);
     const state: FactoryState = {
       phase: 'init',
@@ -27,6 +27,7 @@ export class StateStore {
       parallel: opts.parallel,
       workdir: opts.workdir,
       taskDescription: opts.taskDescription,
+      baseTree: opts.baseTree,
       completedStages: [],
     };
     const store = new StateStore(stateFile, state);
@@ -40,6 +41,9 @@ export class StateStore {
       throw new Error(`state.local.json not found at ${stateFile} — run was not initialized`);
     }
     const state = JSON.parse(readFileSync(stateFile, 'utf-8')) as FactoryState;
+    if (!state.baseTree) {
+      throw new Error(`в ${stateFile} нет baseTree — ран создан старой версией, возобновить его нельзя`);
+    }
     return new StateStore(stateFile, state);
   }
 

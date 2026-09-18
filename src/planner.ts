@@ -1,12 +1,19 @@
 import { writeFileSync } from 'node:fs';
 import { z } from 'zod';
-import { query } from '@anthropic-ai/claude-agent-sdk';
-import type { Task } from './types.js';
+import type { Task, TokenUsage } from './types.js';
 import { runDirPaths } from './runDir.js';
 import { DecisionLog } from './decisions.js';
 import { makeLogger } from './logger.js';
+import { runAgentQuery } from './agentQuery.js';
+import { isSafeRelativePath, normalizeRelativePath } from './pathSafety.js';
+import { addUsage } from './usage.js';
 
 const log = makeLogger('planner');
+
+const SafePath = z
+  .string()
+  .min(1)
+  .refine(isSafeRelativePath, 'путь должен быть относительным и не выходить за пределы workdir');
 
 const TaskSchema = z.object({
   id: z
@@ -15,13 +22,17 @@ const TaskSchema = z.object({
   title: z.string().min(1),
   description: z.string().min(1),
   testFirst: z.string().min(1),
-  testFile: z.string().min(1),
-  targetFiles: z.array(z.string().min(1)).min(1),
+  testFile: SafePath,
+  targetFiles: z.array(SafePath).min(1),
   acceptanceCriteria: z.array(z.string().min(1)).min(1),
 });
 
-const PlanSchema = z.object({
-  tasks: z.array(TaskSchema).min(1),
+export const PlanSchema = z.object({
+  // id — имя evidence-файла и ключ в usage.json: дубликат молча перезаписал бы чужой результат.
+  tasks: z
+    .array(TaskSchema)
+    .min(1)
+    .refine((tasks) => new Set(tasks.map((t) => t.id)).size === tasks.length, 'id подзадач должны быть уникальными'),
 });
 
 // Ручная JSON Schema для outputFormat — держим синхронно с TaskSchema выше.
@@ -39,24 +50,26 @@ const PLAN_JSON_SCHEMA = {
         required: ['id', 'title', 'description', 'testFirst', 'testFile', 'targetFiles', 'acceptanceCriteria'],
         properties: {
           id: { type: 'string', pattern: '^[a-z0-9-]+$' },
-          title: { type: 'string' },
-          description: { type: 'string' },
+          title: { type: 'string', minLength: 1 },
+          description: { type: 'string', minLength: 1 },
           testFirst: {
             type: 'string',
+            minLength: 1,
             description: 'Что именно должно упасть первым как красный тест',
           },
           testFile: {
             type: 'string',
+            minLength: 1,
             description: 'Уникальный путь к тестовому файлу этой задачи, относительно workdir',
           },
           targetFiles: {
             type: 'array',
-            items: { type: 'string' },
+            items: { type: 'string', minLength: 1 },
             minItems: 1,
           },
           acceptanceCriteria: {
             type: 'array',
-            items: { type: 'string' },
+            items: { type: 'string', minLength: 1 },
             minItems: 1,
           },
         },
@@ -73,6 +86,7 @@ const SYSTEM_PROMPT = `Ты технический лид в духе superpower
 - Для каждой подзадачи testFirst описывает, что именно должно упасть как красный тест ДО реализации кода (test-first, TDD).
 - testFile — уникальный относительный путь (например "math/add.test.js"), обязательно с валидным расширением для node --test.
 - targetFiles — файлы с реализацией, которые создаст/изменит исполнитель этой подзадачи.
+- Все пути — относительные, без ".." и без абсолютных путей: исполнитель физически не сможет писать вне workdir.
 - acceptanceCriteria — конкретные, проверяемые критерии приёмки.
 - id — короткий kebab-case идентификатор ("task-1", "add-function").
 
@@ -81,26 +95,28 @@ const SYSTEM_PROMPT = `Ты технический лид в духе superpower
 export type PlanResult = {
   tasks: Task[];
   overlapWarning: boolean;
-  usage: { inputTokens: number; outputTokens: number };
+  usage: TokenUsage;
 };
 
-function findOverlaps(tasks: Task[]): string[] {
+export function findOverlaps(tasks: Task[]): string[] {
   const seenTestFiles = new Map<string, string>();
   const seenTargetFiles = new Map<string, string>();
   const warnings: string[] = [];
 
   for (const task of tasks) {
-    const prevTestOwner = seenTestFiles.get(task.testFile);
+    const testFile = normalizeRelativePath(task.testFile);
+    const prevTestOwner = seenTestFiles.get(testFile);
     if (prevTestOwner) {
       warnings.push(`testFile "${task.testFile}" используется и в "${prevTestOwner}", и в "${task.id}"`);
     } else {
-      seenTestFiles.set(task.testFile, task.id);
+      seenTestFiles.set(testFile, task.id);
     }
 
-    for (const file of task.targetFiles) {
+    for (const rawFile of task.targetFiles) {
+      const file = normalizeRelativePath(rawFile);
       const prevTargetOwner = seenTargetFiles.get(file);
       if (prevTargetOwner) {
-        warnings.push(`targetFile "${file}" используется и в "${prevTargetOwner}", и в "${task.id}"`);
+        warnings.push(`targetFile "${rawFile}" используется и в "${prevTargetOwner}", и в "${task.id}"`);
       } else {
         seenTargetFiles.set(file, task.id);
       }
@@ -110,32 +126,14 @@ function findOverlaps(tasks: Task[]): string[] {
   return warnings;
 }
 
-type PlannerQueryResult = { output: unknown; usage: { inputTokens: number; outputTokens: number } };
-
-async function runPlannerQuery(prompt: string): Promise<PlannerQueryResult> {
-  const q = query({
-    prompt,
-    options: {
-      systemPrompt: SYSTEM_PROMPT,
-      tools: [],
-      maxTurns: 4,
-      outputFormat: { type: 'json_schema', schema: PLAN_JSON_SCHEMA },
-    },
+async function runPlannerQuery(prompt: string) {
+  const { structuredOutput, usage } = await runAgentQuery('planner', prompt, {
+    systemPrompt: SYSTEM_PROMPT,
+    tools: [],
+    maxTurns: 4,
+    outputFormat: { type: 'json_schema', schema: PLAN_JSON_SCHEMA },
   });
-
-  let usage = { inputTokens: 0, outputTokens: 0 };
-  for await (const message of q) {
-    if (message.type === 'result') {
-      if (message.subtype !== 'success') {
-        throw new Error(`planner query завершился с ошибкой: ${message.subtype}`);
-      }
-      for (const m of Object.values(message.modelUsage)) {
-        usage = { inputTokens: usage.inputTokens + m.inputTokens, outputTokens: usage.outputTokens + m.outputTokens };
-      }
-      return { output: message.structured_output, usage };
-    }
-  }
-  throw new Error('planner query завершился без result-сообщения');
+  return { output: structuredOutput, usage };
 }
 
 function renderPlanMd(taskDescription: string, tasks: Task[]): string {
@@ -164,16 +162,16 @@ export async function plan(taskDescription: string, runDir: string): Promise<Pla
   const paths = runDirPaths(runDir);
   const decisions = new DecisionLog(runDir);
 
-let { output: raw, usage } = await runPlannerQuery(taskDescription);
-  let parsed = PlanSchema.safeParse(raw);
+  const first = await runPlannerQuery(taskDescription);
+  let usage = first.usage;
+  let parsed = PlanSchema.safeParse(first.output);
 
   if (!parsed.success) {
     log.warn('первый ответ планировщика не прошёл валидацию, делаю один ретрай');
     const retryPrompt = `${taskDescription}\n\nПредыдущий ответ не прошёл валидацию схемы:\n${parsed.error.message}\n\nИсправь и верни снова корректный JSON.`;
     const retry = await runPlannerQuery(retryPrompt);
-    raw = retry.output;
-    usage = { inputTokens: usage.inputTokens + retry.usage.inputTokens, outputTokens: usage.outputTokens + retry.usage.outputTokens };
-    parsed = PlanSchema.safeParse(raw);
+    usage = addUsage(usage, retry.usage);
+    parsed = PlanSchema.safeParse(retry.output);
   }
 
   if (!parsed.success) {

@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import { appendFileSync } from 'node:fs';
 import type { Decision, DecisionSource } from './types.js';
 import { runDirPaths } from './runDir.js';
 
@@ -19,13 +19,5 @@ export class DecisionLog {
       detail,
     };
     appendFileSync(this.file, JSON.stringify(decision) + '\n', 'utf-8');
-  }
-
-  readAll(): Decision[] {
-    if (!existsSync(this.file)) return [];
-    return readFileSync(this.file, 'utf-8')
-      .split('\n')
-      .filter((line) => line.trim().length > 0)
-      .map((line) => JSON.parse(line) as Decision);
   }
 }

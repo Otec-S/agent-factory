@@ -19,7 +19,10 @@ structure, многолинзовое ревью, изоляция по конт
 npm install
 cp .env.example .env   # вписать ANTHROPIC_API_KEY
 npm run build
+npm test               # сборка + unit/интеграционные тесты (node:test, без вызовов модели)
 ```
+
+Требуется Node.js 22+ и `git` в `PATH`.
 
 ## Запуск
 
@@ -29,34 +32,44 @@ node dist/cli.js task.txt --workdir ./scratch
 node dist/cli.js "добавь модуль math.ts с функциями add и multiply" --workdir ./scratch
 ```
 
-Флаги:
+Флаги принимаются в обеих формах: `--flag=value` и `--flag value`. Неизвестный
+флаг или некорректное число — ошибка сразу при старте, а не тихое значение по умолчанию.
+
 - `--workdir=<path>` (обязателен) — куда будет писаться код целевого проекта.
 - `--parallel` — воркеры имплементации запускаются одновременно (см. раздел «Параллелизм» ниже). По умолчанию выключено.
 - `--max-attempts=<n>` (по умолчанию 4) — сколько попыток даётся воркеру на red-фазу и на green-фазу.
 - `--worker-timeout=<sec>` (по умолчанию 300) — wall-clock таймаут одного процесса-воркера.
+- `--lens-timeout=<sec>` (по умолчанию 600) — таймаут одной линзы ревью.
+- `--resume=<run_dir>` — продолжить упавший ран с первой незавершённой стадии.
 
 ## Схема пайплайна
 
 ```
 CLI
  └─ run_dir = docs/agent-factory/runs/<timestamp>-<slug>/   (вычисляется один раз)
- └─ bootstrap workdir (package.json type:module, git init)
+ └─ bootstrap workdir (package.json type:module, git init, снимок baseTree)
 
 Planning (planner.ts, 1 вызов модели)
  └─ tasks.json + plan.md
     каждая задача: testFirst, уникальный testFile, targetFiles, acceptanceCriteria
+    пути только относительные и внутри workdir, id уникальны (zod-схема)
     пересечения testFile/targetFiles между задачами проверяются ДЕТЕРМИНИРОВАННО
 
 Implementation — subagent-per-task (worker.ts, отдельный Node-процесс на задачу)
  └─ по умолчанию ПОСЛЕДОВАТЕЛЬНО, под --parallel — одновременно
  └─ на задачу: red (падающий тест) -> green (реализация) -> evidence/<task-id>.json
- └─ Promise.allSettled: падение одного воркера не роняет ран целиком
+ └─ запись разрешена только в testFile (red) / targetFiles (green) — PreToolUse-хук + canUseTool, не промпт
+ └─ падение/таймаут одного воркера не роняет ран: сбой нормализуется в WorkerResult
 
 Validation (evidenceValidator.ts, 0 вызовов модели)
- └─ 6 детерминированных проверок реальности TDD-цикла по каждому evidence-файлу
+ └─ детерминированные проверки реальности TDD-цикла по каждому evidence-файлу
+    red засчитывается, только если упала проверка или ещё нет модуля/экспорта из targetFiles;
+    сломанный тестовый файл node --test тоже считает "# fail 1", поэтому вывод разбирается
 
 Diff freeze (diff.ts)
- └─ git add -A -N && git diff  ->  diff.patch + changed-files.json
+ └─ git diff baseTree..<снимок workdir>  ->  diff.patch + changed-files.json
+    (снимки через временный индекс: индекс и HEAD пользователя не меняются,
+     в ревью не попадает то, что было в workdir до рана)
 
 Review — 3 параллельные линзы (review/lensRunner.ts, всегда параллельно)
  └─ blind:      видит только diff.patch
@@ -80,7 +93,7 @@ docs/agent-factory/runs/<timestamp>-<slug>/
   decisions.jsonl        # append-only журнал: что решено детерминированно, а что моделью
   plan.md / tasks.json
   evidence/<task-id>.json
-  workers/<task-id>.log
+  workers/<task-id>.result.json   # результат воркера — resume не перезапускает готовые задачи
   diff.patch / changed-files.json
   review/lens-*.json, final.json, brief.md
   usage.json
@@ -88,6 +101,11 @@ docs/agent-factory/runs/<timestamp>-<slug>/
 ```
 
 ## Изоляция
+
+Все вызовы Agent SDK идут с `settingSources: []`: начиная с SDK 0.3 без этого
+подгружаются `~/.claude/settings.json`, `.claude/settings*.json` и CLAUDE.md
+пользователя — их правила allow могли бы одобрить запись в обход гейтов, а
+инструкции попасть в контекст агентов.
 
 Без git worktree и без отдельных директорий на воркера. Изоляция —
 **по контексту**: каждый субпроцесс (воркер, линза) получает узкий вход
@@ -107,9 +125,10 @@ LLM-агента с write-правами в одной рабочей дирек
 
 Флаг `--parallel` включает одновременный запуск воркеров как учебный
 эксперимент, чтобы увидеть эти гонки живьём. planner.ts детерминированно
-проверяет непересечение `testFile`/`targetFiles` между задачами и логирует
-предупреждение при конфликте, но не блокирует ран — увидеть последствия
-гонки на практике полезнее, чем спрятать её.
+проверяет непересечение `testFile`/`targetFiles` между задачами; при
+пересечении ран не падает, но cli.ts принудительно переключает его в
+последовательный режим, даже если запрошен `--parallel`. Поэтому для
+эксперимента ниже эту проверку пришлось обойти вручную.
 
 **Наблюдения при `--parallel`** (два воркера, намеренно делящие один и тот же
 `targetFiles: ['shared.js']`, planner-проверка обойдена вручную для чистоты

@@ -1,14 +1,18 @@
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 
-function slugify(text: string): string {
-  return text
-    .toLowerCase()
-    .normalize('NFKD')
-    .replace(/[̀-ͯ]/g, '')
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 40) || 'task';
+/** Короткий читаемый суффикс имени run_dir. Буквы любых алфавитов сохраняются (иначе кириллическое описание всегда давало бы "task"). */
+export function slugify(text: string): string {
+  return (
+    text
+      .toLowerCase()
+      .normalize('NFKD')
+      .replace(/\p{M}/gu, '') // комбинируемые диакритики после NFKD
+      .replace(/[^\p{L}\p{N}]+/gu, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 40)
+      .replace(/-+$/, '') || 'task'
+  );
 }
 
 /** Вычисляется один раз в cli.ts и передаётся всем стадиям явно. */
@@ -25,7 +29,6 @@ export function createRunDir(taskDescription: string, baseDir = 'docs/agent-fact
 
 export function runDirPaths(runDir: string) {
   return {
-    root: runDir,
     stateFile: path.join(runDir, 'state.local.json'),
     decisionsFile: path.join(runDir, 'decisions.jsonl'),
     planMd: path.join(runDir, 'plan.md'),
@@ -35,13 +38,11 @@ export function runDirPaths(runDir: string) {
     lensResultsJson: path.join(runDir, 'lens-results.json'),
     triageUsageJson: path.join(runDir, 'triage-usage.json'),
     evidenceValidationsJson: path.join(runDir, 'evidence-validations.json'),
-    evidenceDir: path.join(runDir, 'evidence'),
     evidenceFile: (taskId: string) => path.join(runDir, 'evidence', `${taskId}.json`),
-    workersDir: path.join(runDir, 'workers'),
-    workerLog: (taskId: string) => path.join(runDir, 'workers', `${taskId}.log`),
+    // Результат каждого воркера пишется сразу по завершении — resume пропускает уже выполненные задачи.
+    workerResultFile: (taskId: string) => path.join(runDir, 'workers', `${taskId}.result.json`),
     diffPatch: path.join(runDir, 'diff.patch'),
     changedFilesJson: path.join(runDir, 'changed-files.json'),
-    reviewDir: path.join(runDir, 'review'),
     lensFile: (name: string) => path.join(runDir, 'review', `lens-${name}.json`),
     reviewFinal: path.join(runDir, 'review', 'final.json'),
     reviewBrief: path.join(runDir, 'review', 'brief.md'),

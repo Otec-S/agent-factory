@@ -1,5 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import path from 'node:path';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { createRunDir, runDirPaths } from './runDir.js';
 import { bootstrapWorkdir } from './workdir.js';
 import { StateStore } from './state.js';
@@ -11,50 +10,17 @@ import { freezeDiff } from './diff.js';
 import { triage } from './review/triage.js';
 import { buildUsage, writeUsage } from './usage.js';
 import { makeLogger } from './logger.js';
-import type { EvidenceValidation, Task, WorkerResult, Phase } from './types.js';
+import { parseArgs } from './args.js';
+import type { EvidenceValidation, Task, WorkerResult, Phase, TokenUsage } from './types.js';
 import type { LensRunnerResult } from './review/lensRunner.js';
 
 const log = makeLogger('cli');
-
-type TokenUsage = { inputTokens: number; outputTokens: number };
-const ZERO_USAGE: TokenUsage = { inputTokens: 0, outputTokens: 0 };
-
-type Args =
-  | { mode: 'new'; taskDescription: string; workdir: string; parallel: boolean; maxAttempts: number; workerTimeoutSec: number }
-  | { mode: 'resume'; runDir: string; parallel?: boolean; maxAttempts: number; workerTimeoutSec: number };
-
-function getFlag(argv: string[], name: string): string | undefined {
-  const prefix = `--${name}=`;
-  return argv.find((a) => a.startsWith(prefix))?.slice(prefix.length);
-}
-
-function parseArgs(argv: string[]): Args {
-  const maxAttempts = Number(getFlag(argv, 'max-attempts') ?? '4');
-  const workerTimeoutSec = Number(getFlag(argv, 'worker-timeout') ?? '300');
-  const parallel = argv.includes('--parallel');
-
-  const resume = getFlag(argv, 'resume');
-  if (resume) {
-    return { mode: 'resume', runDir: path.resolve(process.cwd(), resume), parallel: argv.includes('--parallel') ? true : undefined, maxAttempts, workerTimeoutSec };
-  }
-
-  const positional = argv.filter((a) => !a.startsWith('--'));
-  if (positional.length === 0) {
-    throw new Error('нужен аргумент: путь к файлу с описанием задачи ИЛИ само описание строкой (либо --resume=<run_dir>)');
-  }
-  const taskArg = positional[0];
-  const taskDescription = existsSync(taskArg) ? readFileSync(taskArg, 'utf-8').trim() : taskArg;
-
-  const workdir = getFlag(argv, 'workdir');
-  if (!workdir) throw new Error('обязателен флаг --workdir=<path>');
-
-  return { mode: 'new', taskDescription, workdir: path.resolve(process.cwd(), workdir), parallel, maxAttempts, workerTimeoutSec };
-}
 
 function renderReportMd(opts: {
   taskDescription: string;
   workerResults: WorkerResult[];
   validations: EvidenceValidation[];
+  lensResults: LensRunnerResult[];
   runDir: string;
 }): string {
   const paths = runDirPaths(opts.runDir);
@@ -67,6 +33,12 @@ function renderReportMd(opts: {
     lines.push(`  ${wr.summary}`);
   }
 
+  const failedLenses = opts.lensResults.filter((r) => !r.ok);
+  if (failedLenses.length > 0) {
+    lines.push('', `## Ревью неполное`, '');
+    for (const r of failedLenses) lines.push(`- линза **${r.lens}** не отработала: ${r.error ?? 'причина неизвестна'}`);
+  }
+
   lines.push('', `## Артефакты`, '');
   lines.push(`- План: \`${paths.planMd}\``);
   lines.push(`- Diff: \`${paths.diffPatch}\``);
@@ -77,11 +49,15 @@ function renderReportMd(opts: {
   return lines.join('\n');
 }
 
-function readJson<T>(file: string, fallback: T): T {
+/**
+ * Читает сохранённый артефакт стадии. Отсутствующий или битый файл — ошибка:
+ * тихая подмена пустым значением превратила бы resume в "0 задач, всё зелёное".
+ */
+function readJson<T>(file: string): T {
   try {
     return JSON.parse(readFileSync(file, 'utf-8')) as T;
-  } catch {
-    return fallback;
+  } catch (err) {
+    throw new Error(`не удалось прочитать артефакт ${file}: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -115,16 +91,17 @@ async function main(): Promise<void> {
     log.info(`resume: ${runDir}, текущая фаза: ${state.get().phase}`);
   } else {
     runDir = createRunDir(args.taskDescription);
-    state = StateStore.init(runDir, { parallel: args.parallel, workdir: args.workdir, taskDescription: args.taskDescription });
-    decisions = new DecisionLog(runDir);
     log.info(`новый run_dir: ${runDir}`);
-    bootstrapWorkdir(args.workdir);
-    decisions.record('cli.bootstrap', 'ok', 'deterministic', { workdir: args.workdir });
+    // bootstrap до init состояния: baseTree — часть состояния рана, от него считается diff.
+    const { baseTree } = bootstrapWorkdir(args.workdir);
+    state = StateStore.init(runDir, { parallel: args.parallel, workdir: args.workdir, taskDescription: args.taskDescription, baseTree });
+    decisions = new DecisionLog(runDir);
+    decisions.record('cli.bootstrap', 'ok', 'deterministic', { workdir: args.workdir, baseTree });
     state.markStageDone('init');
   }
 
   const paths = runDirPaths(runDir);
-  const { workdir, taskDescription } = state.get();
+  const { workdir, taskDescription, baseTree } = state.get();
   const requestedParallel = args.mode === 'resume' ? (args.parallel ?? state.get().parallel) : args.parallel;
 
   const tasks = await runStage(
@@ -137,12 +114,12 @@ async function main(): Promise<void> {
       state.transition('planning', 'planner.done', { taskCount: result.tasks.length });
       return result.tasks;
     },
-    () => readJson<Task[]>(paths.tasksJson, []),
+    () => readJson<Task[]>(paths.tasksJson),
   );
 
   // Пересечение testFile/targetFiles между задачами (детерминированная проверка planner.ts)
   // принудительно переводит ран в последовательный режим, даже если запрошен --parallel.
-  const planMeta = readJson<{ overlapWarning: boolean }>(paths.plannerUsageJson, { overlapWarning: false });
+  const planMeta = readJson<{ overlapWarning: boolean }>(paths.plannerUsageJson);
   let parallel = requestedParallel;
   if (planMeta.overlapWarning && parallel) {
     log.warn('обнаружено пересечение testFile/targetFiles между задачами — принудительно перехожу в последовательный режим');
@@ -160,7 +137,7 @@ async function main(): Promise<void> {
       writeFileSync(paths.workerResultsJson, JSON.stringify(results, null, 2), 'utf-8');
       return results;
     },
-    () => readJson<WorkerResult[]>(paths.workerResultsJson, []),
+    () => readJson<WorkerResult[]>(paths.workerResultsJson),
   );
 
   const validations = await runStage(
@@ -173,7 +150,7 @@ async function main(): Promise<void> {
       writeFileSync(paths.evidenceValidationsJson, JSON.stringify(result, null, 2), 'utf-8');
       return result;
     },
-    () => readJson<EvidenceValidation[]>(paths.evidenceValidationsJson, []),
+    () => readJson<EvidenceValidation[]>(paths.evidenceValidationsJson),
   );
 
   await runStage(
@@ -181,7 +158,7 @@ async function main(): Promise<void> {
     'diff',
     'diff.freeze',
     'diff.done',
-    () => freezeDiff(workdir, runDir, workerResults),
+    () => freezeDiff(workdir, runDir, baseTree, workerResults),
     () => undefined,
   );
 
@@ -191,11 +168,11 @@ async function main(): Promise<void> {
     'lenses.dispatch',
     'lenses.done',
     async () => {
-      const results = await dispatchLenses(tasks, workdir, runDir);
+      const results = await dispatchLenses(tasks, workdir, runDir, args.lensTimeoutSec);
       writeFileSync(paths.lensResultsJson, JSON.stringify(results, null, 2), 'utf-8');
       return results;
     },
-    () => readJson<LensRunnerResult[]>(paths.lensResultsJson, []),
+    () => readJson<LensRunnerResult[]>(paths.lensResultsJson),
   );
 
   const triageUsage = await runStage(
@@ -204,11 +181,12 @@ async function main(): Promise<void> {
     'triage.run',
     'triage.done',
     async () => {
-      const result = await triage(workdir, runDir);
+      const failedLenses = lensResults.filter((r) => !r.ok).map((r) => r.lens);
+      const result = await triage(workdir, runDir, failedLenses);
       writeFileSync(paths.triageUsageJson, JSON.stringify(result.usage, null, 2), 'utf-8');
       return result.usage;
     },
-    () => readJson<TokenUsage>(paths.triageUsageJson, ZERO_USAGE),
+    () => readJson<TokenUsage>(paths.triageUsageJson),
   );
 
   await runStage(
@@ -217,10 +195,10 @@ async function main(): Promise<void> {
     'report.write',
     'report.done',
     () => {
-      const plannerMeta = readJson<{ usage: TokenUsage }>(paths.plannerUsageJson, { usage: ZERO_USAGE });
+      const plannerMeta = readJson<{ usage: TokenUsage }>(paths.plannerUsageJson);
       const usage = buildUsage(plannerMeta.usage, workerResults, lensResults, triageUsage);
       writeUsage(runDir, usage);
-      const reportMd = renderReportMd({ taskDescription, workerResults, validations, runDir });
+      const reportMd = renderReportMd({ taskDescription, workerResults, validations, lensResults, runDir });
       writeFileSync(paths.reportMd, reportMd, 'utf-8');
       console.log('\n' + reportMd + '\n');
       log.info(`review brief: ${paths.reviewBrief}`);
