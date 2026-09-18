@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Task, LensName } from '../types.js';
-import { runDirPaths } from '../runDir.js';
+import { reviewPaths } from '../runDir.js';
 
 const AGENT_FACTORY_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const STANDARDS_MD_PATH = path.join(AGENT_FACTORY_ROOT, 'standards.md');
@@ -41,8 +41,8 @@ const BASE_SYSTEM_PROMPT = `Ты один из независимых ревью
  * Каждая линза читает СВОЙ узкий набор файлов с диска и получает узкий prompt —
  * контекстная изоляция. Именно в разных входах у линз весь смысл упражнения.
  */
-export function buildLensPrompt(name: LensName, runDir: string, workdir: string, tasks: Task[]): LensPrompt {
-  const paths = runDirPaths(runDir);
+export function buildLensPrompt(name: LensName, runDir: string, workdir: string, tasks: Task[], round = 1): LensPrompt {
+  const paths = reviewPaths(runDir, round);
 
   if (name === 'blind') {
     const diff = readFileSync(paths.diffPatch, 'utf-8');

@@ -1,5 +1,5 @@
-import { writeFileSync } from 'node:fs';
-import { runDirPaths } from './runDir.js';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { reviewPaths } from './runDir.js';
 import { git, snapshotTree } from './git.js';
 import type { WorkerResult } from './types.js';
 
@@ -10,9 +10,12 @@ import type { WorkerResult } from './types.js';
  * Diff считается между деревом на момент bootstrap (baseTree) и текущим
  * состоянием workdir, поэтому в ревью не попадают ни результаты прошлых ранов
  * в том же workdir, ни незакоммиченные правки, сделанные до старта рана.
+ * Повторное ревью после fix-up (round > 1) видит полный diff от baseTree, а не только правку:
+ * исправление могло сломать то, что в первом раунде было в порядке.
  */
-export function freezeDiff(workdir: string, runDir: string, baseTree: string, workerResults: WorkerResult[]): void {
-  const paths = runDirPaths(runDir);
+export function freezeDiff(workdir: string, runDir: string, baseTree: string, workerResults: WorkerResult[], round = 1): void {
+  const paths = reviewPaths(runDir, round);
+  mkdirSync(paths.dir, { recursive: true });
   const currentTree = snapshotTree(workdir);
 
   writeFileSync(paths.diffPatch, git(workdir, ['diff', baseTree, currentTree]), 'utf-8');

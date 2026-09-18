@@ -77,6 +77,39 @@ export type ReviewVerdict = {
   summary: string;
 };
 
+/** critical/major — то, ради чего стоит возвращаться к имплементации. */
+export type BlockingSeverity = 'critical' | 'major';
+
+/** Детерминированная раскладка блокирующих находок по задачам (без вызова модели). */
+export type FixupPlan = {
+  assignments: { taskId: string; findings: ReviewFinding[] }[];
+  // Находки, которые fix-up не может взять: без файла, в тестовом файле (тесты в fix-up read-only), вне задач.
+  unassigned: { finding: ReviewFinding; reason: 'no-file' | 'test-file' | 'outside-tasks' }[];
+};
+
+// applied: правка сохранена, тест задачи зелёный; reverted: зелёным не стал — файлы возвращены как были;
+// skipped: тест задачи не был зелёным ещё до fix-up — чинить поверх красного нечего.
+export type FixupStatus = 'applied' | 'reverted' | 'skipped' | 'error' | 'timeout';
+
+export type FixupResult = {
+  taskId: string;
+  status: FixupStatus;
+  findingsCount: number;
+  attempts: number;
+  summary: string;
+  usage: TokenUsage;
+  finalRun?: TestRun; // последний прогон теста задачи после fix-up
+  error?: string;
+};
+
+/** Итог повторного ревью: сколько блокирующих находок осталось после fix-up. */
+export type RereviewSummary = {
+  ran: boolean;
+  reason: string;
+  blockingBefore: number;
+  blockingAfter: number | null; // null — повторное ревью не запускалось
+};
+
 export type EvidenceValidation = {
   taskId: string;
   valid: boolean;
@@ -91,6 +124,8 @@ export type Phase =
   | 'diff'
   | 'review'
   | 'triage'
+  | 'fixup'
+  | 'rereview'
   | 'report'
   | 'done';
 
@@ -101,6 +136,7 @@ export type FactoryState = {
   taskCount: number;
   implMode: 'subagent-per-task';
   parallel: boolean;
+  fixup: boolean; // разрешён ли fix-up раунд; в старых state.local.json поля нет — считается true
   workdir: string;
   taskDescription: string;
   // git-дерево workdir на момент bootstrap: diff считается от него, а не от HEAD/индекса
@@ -123,4 +159,6 @@ export type Usage = {
   workers: Record<string, TokenUsage>;
   lenses: Record<string, TokenUsage>;
   triage: TokenUsage;
+  fixup: Record<string, TokenUsage>;
+  rereview: { lenses: Record<string, TokenUsage>; triage: TokenUsage } | null;
 };

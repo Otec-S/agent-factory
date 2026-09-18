@@ -16,7 +16,7 @@ export class StateStore {
     this.state = state;
   }
 
-  static init(runDir: string, opts: { parallel: boolean; workdir: string; taskDescription: string; baseTree: string }): StateStore {
+  static init(runDir: string, opts: { parallel: boolean; fixup: boolean; workdir: string; taskDescription: string; baseTree: string }): StateStore {
     const { stateFile } = runDirPaths(runDir);
     const state: FactoryState = {
       phase: 'init',
@@ -25,6 +25,7 @@ export class StateStore {
       taskCount: 0,
       implMode: 'subagent-per-task',
       parallel: opts.parallel,
+      fixup: opts.fixup,
       workdir: opts.workdir,
       taskDescription: opts.taskDescription,
       baseTree: opts.baseTree,
@@ -44,7 +45,8 @@ export class StateStore {
     if (!state.baseTree) {
       throw new Error(`в ${stateFile} нет baseTree — ран создан старой версией, возобновить его нельзя`);
     }
-    return new StateStore(stateFile, state);
+    // Раны, созданные до появления fix-up раунда: поведение по умолчанию — раунд включён.
+    return new StateStore(stateFile, { ...state, fixup: state.fixup ?? true });
   }
 
   get(): Readonly<FactoryState> {

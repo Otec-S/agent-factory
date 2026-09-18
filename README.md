@@ -40,6 +40,7 @@ node dist/cli.js "добавь модуль math.ts с функциями add и
 - `--max-attempts=<n>` (по умолчанию 4) — сколько попыток даётся воркеру на red-фазу и на green-фазу.
 - `--worker-timeout=<sec>` (по умолчанию 300) — wall-clock таймаут одного процесса-воркера.
 - `--lens-timeout=<sec>` (по умолчанию 600) — таймаут одной линзы ревью.
+- `--no-fixup` — выключить fix-up раунд (поведение v1: один проход ревью). Работает и вместе с `--resume`.
 - `--resume=<run_dir>` — продолжить упавший ран с первой незавершённой стадии.
 
 ## Схема пайплайна
@@ -79,10 +80,23 @@ Review — 3 параллельные линзы (review/lensRunner.ts, всег
 
 Triage (review/triage.ts, 1 вызов модели, read-доступ к workdir)
  └─ дедуп -> проверка достижимости по реальному коду -> severity -> review/final.json + review/brief.md
-    (без fix-up раунда в v1)
+
+Fix-up (fixupPlan.ts + fixupWorker.ts, один раунд, всегда ПОСЛЕДОВАТЕЛЬНО)
+ └─ critical/major находки раскладываются по задачам ДЕТЕРМИНИРОВАННО — по targetFiles
+    (находки без файла, в тестовых файлах и вне задач не назначаются, но попадают в отчёт)
+ └─ на задачу: baseline-прогон её теста -> снимок targetFiles -> процесс fix-up
+    запись только в targetFiles, тест задачи read-only и служит гейтом регрессии
+ └─ оркестратор сам перепроверяет тест (и хэш тестового файла) после правки;
+    не зелёный / таймаут / падение процесса -> targetFiles откатываются к снимку
+ └─ fix-up никогда не оставляет задачу в худшем по тестам состоянии, чем до него
+
+Re-review (раунд 2, только если хотя бы одна правка применена)
+ └─ полный diff от baseTree заново -> те же 3 линзы -> triage -> review/round-2/
+ └─ в отчёте: сколько блокирующих находок было и сколько осталось
+    (второго fix-up раунда нет — цикл ограничен, чтобы не жечь токены по кругу)
 
 Report (cli.ts)
- └─ report.md, usage.json (токены по planner/каждому воркеру/каждой линзе/triage), decisions.jsonl
+ └─ report.md, usage.json (токены по planner/воркерам/линзам/triage/fix-up/повторному ревью), decisions.jsonl
 ```
 
 ### Раскладка `run_dir`
@@ -96,6 +110,11 @@ docs/agent-factory/runs/<timestamp>-<slug>/
   workers/<task-id>.result.json   # результат воркера — resume не перезапускает готовые задачи
   diff.patch / changed-files.json
   review/lens-*.json, final.json, brief.md
+  fixup/plan.json                 # какие находки ушли в какие задачи, какие не назначены и почему
+  fixup/<task-id>.result.json     # результат fix-up задачи — resume не перезапускает готовые
+  fixup/results.json
+  review/rereview.json            # было/осталось блокирующих находок
+  review/round-2/                 # diff.patch, changed-files.json, lens-*.json, final.json, brief.md
   usage.json
   report.md
 ```
@@ -158,5 +177,6 @@ LLM-агента с write-правами в одной рабочей дирек
 
 - Implementation mode всегда subagent-per-task — нет inline-режима одного агента.
 - Review — 3 линзы (`blind`, `acceptance`, `standards`), в проде их 5.
-- Без fix-up раунда: один проход review, без автоматического возврата на имплементацию при critical/major находках.
+- Fix-up раунд ровно один; находки в тестовых файлах и вне `targetFiles` задач автоматически не чинятся.
+- Гейт fix-up — «тест задачи остался зелёным», а не «находка устранена»: устранение проверяет только повторное ревью.
 - Без git worktree.

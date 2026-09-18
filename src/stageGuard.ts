@@ -8,6 +8,8 @@ const ORDER: Phase[] = [
   'diff',
   'review',
   'triage',
+  'fixup',
+  'rereview',
   'report',
   'done',
 ];

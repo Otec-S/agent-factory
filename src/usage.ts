@@ -1,5 +1,5 @@
 import { writeFileSync } from 'node:fs';
-import type { WorkerResult, Usage, TokenUsage } from './types.js';
+import type { FixupResult, WorkerResult, Usage, TokenUsage } from './types.js';
 import type { LensRunnerResult } from './review/lensRunner.js';
 import { runDirPaths } from './runDir.js';
 
@@ -27,14 +27,38 @@ export function normalizeUsage(u: Partial<TokenUsage> | undefined): TokenUsage {
   return addUsage(ZERO_USAGE, u ?? {});
 }
 
-export function buildUsage(plannerUsage: TokenUsage, workerResults: WorkerResult[], lensResults: LensRunnerResult[], triageUsage: TokenUsage): Usage {
+function byLens(lensResults: LensRunnerResult[]): Record<string, TokenUsage> {
+  const lenses: Record<string, TokenUsage> = {};
+  for (const r of lensResults) lenses[r.lens] = normalizeUsage(r.usage);
+  return lenses;
+}
+
+export type FixupUsageInput = {
+  fixupResults: FixupResult[];
+  rereview: { lensResults: LensRunnerResult[]; triageUsage: TokenUsage } | null;
+};
+
+export function buildUsage(
+  plannerUsage: TokenUsage,
+  workerResults: WorkerResult[],
+  lensResults: LensRunnerResult[],
+  triageUsage: TokenUsage,
+  fixup: FixupUsageInput = { fixupResults: [], rereview: null },
+): Usage {
   const workers: Usage['workers'] = {};
   for (const r of workerResults) workers[r.taskId] = normalizeUsage(r.usage);
 
-  const lenses: Usage['lenses'] = {};
-  for (const r of lensResults) lenses[r.lens] = normalizeUsage(r.usage);
+  const fixupByTask: Usage['fixup'] = {};
+  for (const r of fixup.fixupResults) fixupByTask[r.taskId] = normalizeUsage(r.usage);
 
-  return { planner: normalizeUsage(plannerUsage), workers, lenses, triage: normalizeUsage(triageUsage) };
+  return {
+    planner: normalizeUsage(plannerUsage),
+    workers,
+    lenses: byLens(lensResults),
+    triage: normalizeUsage(triageUsage),
+    fixup: fixupByTask,
+    rereview: fixup.rereview && { lenses: byLens(fixup.rereview.lensResults), triage: normalizeUsage(fixup.rereview.triageUsage) },
+  };
 }
 
 export function writeUsage(runDir: string, usage: Usage): void {

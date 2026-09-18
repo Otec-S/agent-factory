@@ -2,12 +2,11 @@ import { writeFileSync } from 'node:fs';
 import { runTests } from './testRunner.js';
 import { runDirPaths } from './runDir.js';
 import { makeLogger } from './logger.js';
-import { runAgentQuery } from './agentQuery.js';
 import { serveChild } from './childProcess.js';
-import { makeWriteGuard, makeWriteGuardHooks } from './writeGuard.js';
+import { runAgentTurn, summarizeTestRun } from './agentTurn.js';
 import { VALID_RED_KINDS } from './evidenceValidator.js';
 import { addUsage, ZERO_USAGE } from './usage.js';
-import type { Task, WorkerResult, Evidence, TestRun, TokenUsage } from './types.js';
+import type { Task, WorkerResult, Evidence, TestRun } from './types.js';
 
 export type WorkerInput = {
   task: Task;
@@ -15,33 +14,6 @@ export type WorkerInput = {
   runDir: string;
   maxAttempts: number;
 };
-
-// Должно совпадать с тем, что создаёт bootstrapWorkdir: иначе тест на require() не загрузится вовсе.
-const TARGET_PROJECT_RULES = 'Целевой проект — Node.js в режиме ESM (package.json "type": "module"): только import/export, никаких require/module.exports; тесты — на node:test и node:assert/strict.';
-
-/** Один "ход" Agent SDK с узким набором разрешённых к записи путей. */
-async function runAgentTurn(prompt: string, cwd: string, allowedWritePaths: string[], abortController: AbortController): Promise<TokenUsage> {
-  const systemPrompt = `Ты инженер, реализующий одну изолированную подзадачу в общем репозитории.
-Тебе разрешено СОЗДАВАТЬ и РЕДАКТИРОВАТЬ только следующие файлы: ${allowedWritePaths.join(', ')}.
-Любые другие файлы в репозитории — только для чтения; попытка записи в них будет отклонена.
-Работай только через инструменты для файлов, не проси подтверждения — просто делай.
-${TARGET_PROJECT_RULES}`;
-
-  const { usage } = await runAgentQuery('worker turn', prompt, {
-    cwd,
-    systemPrompt,
-    tools: ['Read', 'Write', 'Edit', 'Glob'],
-    hooks: { PreToolUse: makeWriteGuardHooks(cwd, allowedWritePaths) },
-    canUseTool: makeWriteGuard(cwd, allowedWritePaths),
-    maxTurns: 10,
-    abortController,
-  });
-  return usage;
-}
-
-function summarizeTestRun(run: TestRun): string {
-  return `команда: ${run.cmd}\nexitCode: ${run.exitCode}\ntestsRan: ${run.testsRan}\ntestsFailed: ${run.testsFailed}\nисход: ${run.failureKind}\nвывод:\n${run.output}`;
-}
 
 function isValidRed(run: TestRun): boolean {
   return VALID_RED_KINDS.includes(run.failureKind);

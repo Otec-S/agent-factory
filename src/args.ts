@@ -2,11 +2,11 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 export type Args =
-  | { mode: 'new'; taskDescription: string; workdir: string; parallel: boolean; maxAttempts: number; workerTimeoutSec: number; lensTimeoutSec: number }
-  | { mode: 'resume'; runDir: string; parallel?: boolean; maxAttempts: number; workerTimeoutSec: number; lensTimeoutSec: number };
+  | { mode: 'new'; taskDescription: string; workdir: string; parallel: boolean; fixup: boolean; maxAttempts: number; workerTimeoutSec: number; lensTimeoutSec: number }
+  | { mode: 'resume'; runDir: string; parallel?: boolean; fixup?: boolean; maxAttempts: number; workerTimeoutSec: number; lensTimeoutSec: number };
 
 const VALUE_FLAGS = new Set(['workdir', 'resume', 'max-attempts', 'worker-timeout', 'lens-timeout']);
-const BOOLEAN_FLAGS = new Set(['parallel']);
+const BOOLEAN_FLAGS = new Set(['parallel', 'no-fixup']);
 
 export type TaskReader = (arg: string) => string;
 
@@ -55,10 +55,11 @@ export function parseArgs(argv: string[], readTask: TaskReader = defaultTaskRead
   const workerTimeoutSec = positiveInt('worker-timeout', flags.get('worker-timeout'), 300);
   const lensTimeoutSec = positiveInt('lens-timeout', flags.get('lens-timeout'), 600);
   const parallel = booleans.has('parallel');
+  const fixup = !booleans.has('no-fixup');
 
   const resume = flags.get('resume');
   if (resume) {
-    return { mode: 'resume', runDir: path.resolve(cwd, resume), parallel: parallel ? true : undefined, maxAttempts, workerTimeoutSec, lensTimeoutSec };
+    return { mode: 'resume', runDir: path.resolve(cwd, resume), parallel: parallel ? true : undefined, fixup: fixup ? undefined : false, maxAttempts, workerTimeoutSec, lensTimeoutSec };
   }
 
   if (positional.length === 0) {
@@ -71,5 +72,5 @@ export function parseArgs(argv: string[], readTask: TaskReader = defaultTaskRead
   const workdir = flags.get('workdir');
   if (!workdir) throw new Error('обязателен флаг --workdir=<path>');
 
-  return { mode: 'new', taskDescription: readTask(positional[0]), workdir: path.resolve(cwd, workdir), parallel, maxAttempts, workerTimeoutSec, lensTimeoutSec };
+  return { mode: 'new', taskDescription: readTask(positional[0]), workdir: path.resolve(cwd, workdir), parallel, fixup, maxAttempts, workerTimeoutSec, lensTimeoutSec };
 }

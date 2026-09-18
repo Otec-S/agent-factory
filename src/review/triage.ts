@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { z } from 'zod';
 import type { LensFinding, LensName, ReviewFinding, ReviewVerdict, TokenUsage } from '../types.js';
-import { runDirPaths } from '../runDir.js';
+import { reviewPaths } from '../runDir.js';
 import { LENS_NAMES } from './lenses.js';
 import { DecisionLog } from '../decisions.js';
 import { makeLogger } from '../logger.js';
@@ -61,8 +61,8 @@ const SYSTEM_PROMPT = `Ты triage-агент финальной стадии р
 
 Верни только структурированный JSON по схеме.`;
 
-function readLensFindings(runDir: string): Record<LensName, LensFinding[]> {
-  const paths = runDirPaths(runDir);
+function readLensFindings(runDir: string, round: number): Record<LensName, LensFinding[]> {
+  const paths = reviewPaths(runDir, round);
   const result = {} as Record<LensName, LensFinding[]>;
   for (const name of LENS_NAMES) {
     try {
@@ -127,12 +127,12 @@ export type TriageResult = { verdict: ReviewVerdict; usage: TokenUsage };
  * triage не может проверить достижимость находок и выродится в переписывание
  * находок линз без добавленной ценности.
  */
-export async function triage(workdir: string, runDir: string, failedLenses: LensName[]): Promise<TriageResult> {
-  const paths = runDirPaths(runDir);
+export async function triage(workdir: string, runDir: string, failedLenses: LensName[], round = 1): Promise<TriageResult> {
+  const paths = reviewPaths(runDir, round);
   const decisions = new DecisionLog(runDir);
 
   const diff = readFileSync(paths.diffPatch, 'utf-8');
-  const lensFindings = readLensFindings(runDir);
+  const lensFindings = readLensFindings(runDir, round);
   const findingsBlock = LENS_NAMES.map((name) =>
     failedLenses.includes(name)
       ? `### Линза "${name}"\n(линза не отработала — её находок нет, это НЕ значит, что проблем нет)`
@@ -155,7 +155,7 @@ export async function triage(workdir: string, runDir: string, failedLenses: Lens
 
   writeFileSync(paths.reviewFinal, JSON.stringify(verdict, null, 2), 'utf-8');
   writeFileSync(paths.reviewBrief, renderBriefMd(verdict, failedLenses, droppedFindings), 'utf-8');
-  decisions.record('review.triage', valid ? 'ok' : 'invalid-output', 'llm', { findingsCount: verdict.findings.length, droppedFindings, failedLenses });
+  decisions.record('review.triage', valid ? 'ok' : 'invalid-output', 'llm', { round, findingsCount: verdict.findings.length, droppedFindings, failedLenses });
 
   return { verdict, usage };
 }

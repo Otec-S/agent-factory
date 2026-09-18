@@ -11,6 +11,7 @@ function state(phase: Phase): FactoryState {
     taskCount: 0,
     implMode: 'subagent-per-task',
     parallel: false,
+    fixup: true,
     workdir: '/w',
     taskDescription: '',
     baseTree: 'tree',
@@ -41,4 +42,11 @@ test('сообщает о повреждённом состоянии', () => {
   const r = canRun('planning', state('bogus' as Phase));
   assert.equal(r.allow, false);
   assert.ok(!r.allow && /повреждено/.test(r.reason));
+});
+
+test('fix-up и повторное ревью идут строго между triage и report', () => {
+  assert.deepEqual(canRun('fixup', state('triage')), { allow: true });
+  assert.deepEqual(canRun('rereview', state('fixup')), { allow: true });
+  assert.deepEqual(canRun('report', state('rereview')), { allow: true });
+  assert.equal(canRun('report', state('triage')).allow, false);
 });

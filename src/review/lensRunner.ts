@@ -1,7 +1,7 @@
 import { writeFileSync } from 'node:fs';
 import { z } from 'zod';
 import type { LensFinding, LensName, Task, TokenUsage } from '../types.js';
-import { runDirPaths } from '../runDir.js';
+import { reviewPaths } from '../runDir.js';
 import { buildLensPrompt, FINDINGS_JSON_SCHEMA } from './lenses.js';
 import { makeLogger } from '../logger.js';
 import { runAgentQuery } from '../agentQuery.js';
@@ -21,6 +21,7 @@ export type LensRunnerInput = {
   workdir: string;
   runDir: string;
   tasks: Task[];
+  round: number;
 };
 
 export type LensRunnerResult = {
@@ -37,13 +38,13 @@ export type LensRunnerResult = {
  * не сами находки — контекст оркестратора остаётся чистым.
  */
 export async function runLens(input: LensRunnerInput, abortController = new AbortController()): Promise<LensRunnerResult> {
-  const { lens, workdir, runDir, tasks } = input;
+  const { lens, workdir, runDir, tasks, round } = input;
   const log = makeLogger(`lens:${lens}`);
-  const paths = runDirPaths(runDir);
+  const paths = reviewPaths(runDir, round);
   let usage = ZERO_USAGE;
 
   try {
-    const { systemPrompt, prompt } = buildLensPrompt(lens, runDir, workdir, tasks);
+    const { systemPrompt, prompt } = buildLensPrompt(lens, runDir, workdir, tasks, round);
 
     const result = await runAgentQuery(`lens ${lens}`, prompt, {
       systemPrompt,

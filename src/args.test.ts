@@ -26,6 +26,7 @@ test('значения по умолчанию', () => {
   const a = parse(['t', '--workdir=w']);
   assert.ok(a.mode === 'new');
   assert.equal(a.parallel, false);
+  assert.equal(a.fixup, true);
   assert.equal(a.maxAttempts, 4);
   assert.equal(a.workerTimeoutSec, 300);
   assert.equal(a.lensTimeoutSec, 600);
@@ -34,6 +35,14 @@ test('значения по умолчанию', () => {
 test('--parallel', () => {
   const a = parse(['t', '--workdir=w', '--parallel']);
   assert.ok(a.mode === 'new' && a.parallel);
+});
+
+test('--no-fixup выключает fix-up раунд и в новом ране, и при resume', () => {
+  const a = parse(['t', '--workdir=w', '--no-fixup']);
+  assert.ok(a.mode === 'new' && a.fixup === false);
+  const r = parse(['--resume=runs/x', '--no-fixup']);
+  assert.ok(r.mode === 'resume' && r.fixup === false);
+  assert.throws(() => parse(['t', '--workdir=w', '--no-fixup=1']), /не принимает значения/);
 });
 
 test('нечисловой или неположительный таймаут — ошибка, а не NaN', () => {
@@ -62,5 +71,5 @@ test('несколько позиционных аргументов — под�
 
 test('resume не требует workdir и описания', () => {
   const a = parse(['--resume', 'runs/x']);
-  assert.deepEqual(a, { mode: 'resume', runDir: path.resolve(cwd, 'runs/x'), parallel: undefined, maxAttempts: 4, workerTimeoutSec: 300, lensTimeoutSec: 600 });
+  assert.deepEqual(a, { mode: 'resume', runDir: path.resolve(cwd, 'runs/x'), parallel: undefined, fixup: undefined, maxAttempts: 4, workerTimeoutSec: 300, lensTimeoutSec: 600 });
 });
