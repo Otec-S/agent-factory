@@ -41,13 +41,26 @@ export type ClassifyInput = {
  * отсутствие модуля/экспорта ИЗ targetFiles — это ожидаемый red (реализации ещё нет),
  * любая другая ошибка загрузки — проблема самого тестового файла.
  */
+/**
+ * Итог псевдотеста уровня файла, если он есть. node --test заводит его, когда в файле
+ * нет ни одного test() ("ok") или файл не удалось загрузить/выполнить ("not ok"); он назван
+ * путём к самому файлу в формате ОС с TAP-экранированием ("sub\\a.test.js"). У настоящих
+ * тестов имена свои, поэтому это надёжнее, чем разбирать текст стека ошибки.
+ */
+function filePseudoTest(output: string, testFile: string): 'ok' | 'not ok' | null {
+  const target = normalizeRelativePath(testFile);
+  for (const m of output.matchAll(/^(ok|not ok) \d+ - (.+?)\r?$/gm)) {
+    if (normalizeRelativePath(m[2].replace(/\\(.)/g, '$1')) === target) return m[1] as 'ok' | 'not ok';
+  }
+  return null;
+}
+
 export function classifyRun(input: ClassifyInput): FailureKind {
   const { exitCode, output, testsRan, testsFailed, workdir, testFile, targetFiles } = input;
+  const fileLevel = filePseudoTest(output, testFile);
+
   if (exitCode === 0) {
-    // Файл без единого test() node --test показывает как один пройденный псевдотест,
-    // названный путём к самому файлу в формате ОС ("ok 1 - sub\\a.test.js" с TAP-экранированием).
-    const firstName = output.match(/^ok 1 - (.+?)\r?$/m)?.[1].replace(/\\(.)/g, '$1');
-    const onlyFilePseudoTest = testsRan === 1 && firstName !== undefined && normalizeRelativePath(firstName) === normalizeRelativePath(testFile);
+    const onlyFilePseudoTest = testsRan === 1 && fileLevel === 'ok';
     return testsRan > 0 && !onlyFilePseudoTest ? 'passed' : 'no-tests';
   }
 
@@ -64,8 +77,8 @@ export function classifyRun(input: ClassifyInput): FailureKind {
     return isTarget(resolved) ? 'missing-target' : 'load-error';
   }
 
-  // Ошибка загрузки модуля печатается как TAP-комментарий "# XxxError: ..." со стеком "#     at ...".
-  if (/^# (?:[A-Z]\w*Error|Error)\b.*\r?\n#\s+at /m.test(output)) return 'load-error';
+  // Упал сам файл (синтаксис, require в ESM-пакете, исключение на верхнем уровне), а не проверка в test().
+  if (fileLevel === 'not ok') return 'load-error';
 
   if (testsFailed > 0) return 'assertion';
   if (testsRan === 0) return 'no-tests';

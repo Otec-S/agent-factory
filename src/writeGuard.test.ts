@@ -30,6 +30,8 @@ test('canUseTool-адаптер: allow пробрасывает ввод, deny �
   assert.deepEqual(await guard('Write', input, opts), { behavior: 'allow', updatedInput: input });
   const denied = await guard('Write', { file_path: path.join(cwd, 'b.js') }, opts);
   assert.equal(denied?.behavior, 'deny');
+  assert.equal((await guard('Read', { file_path: path.join(cwd, 'b.js') }, opts))?.behavior, 'allow');
+  assert.equal((await guard('Bash', { command: 'ls' }, opts))?.behavior, 'deny');
 });
 
 function preToolUse(toolName: string, toolInput: unknown): HookInput {

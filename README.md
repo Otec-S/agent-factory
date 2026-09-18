@@ -17,7 +17,7 @@ structure, многолинзовое ревью, изоляция по конт
 
 ```bash
 npm install
-cp .env.example .env   # вписать ANTHROPIC_API_KEY
+cp .env.example .env   # вписать ANTHROPIC_API_KEY (или не задавать — тогда используется вход в Claude Code)
 npm run build
 npm test               # сборка + unit/интеграционные тесты (node:test, без вызовов модели)
 ```

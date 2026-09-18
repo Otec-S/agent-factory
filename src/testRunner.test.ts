@@ -54,6 +54,18 @@ test('синтаксическая ошибка в тесте — load-error', (
   assert.equal(r.testsFailed, 1);
 });
 
+// Регрессия из живого рана: Node вставляет пояснение между строкой ошибки и стеком,
+// и прежняя эвристика по стеку принимала это за валидный red.
+test('require в ESM-пакете — load-error, а не assertion', (t) => {
+  const dir = workdir(t, { 'math/add.test.js': "const test = require('node:test');\nconst { add } = require('../math/add.js');\ntest('x', () => {});\n" });
+  assert.equal(runTests(dir, 'math/add.test.js', ['math/add.js']).failureKind, 'load-error');
+});
+
+test('исключение на верхнем уровне тестового файла — load-error', (t) => {
+  const dir = workdir(t, { 'a.test.js': `${HEADER}throw new Error('boom');\n` });
+  assert.equal(runTests(dir, 'a.test.js', ['a.js']).failureKind, 'load-error');
+});
+
 test('упавшая проверка — assertion', (t) => {
   const dir = workdir(t, { 'a.test.js': `${HEADER}test('x', () => assert.equal(1, 2));\n` });
   const r = runTests(dir, 'a.test.js', ['a.js']);

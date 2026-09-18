@@ -2,6 +2,7 @@ import type { CanUseTool, HookCallbackMatcher } from '@anthropic-ai/claude-agent
 import { isAllowedWritePath } from './pathSafety.js';
 
 const WRITE_TOOLS = new Set(['Write', 'Edit']);
+const READ_ONLY_TOOLS = new Set(['Read', 'Glob']);
 
 export type WriteDecision = { allow: true } | { allow: false; reason: string };
 
@@ -49,11 +50,12 @@ export function makeWriteGuardHooks(cwd: string, allowedWritePaths: string[]): H
 }
 
 /**
- * Слой 2 — canUseTool: вызывается для инструментов, не одобренных заранее.
- * Поэтому Write/Edit намеренно НЕ входят в allowedTools.
+ * Слой 2 — canUseTool: вызывается для инструментов, не одобренных заранее, поэтому
+ * в allowedTools воркера ничего нет — чтение одобряется здесь же, запись проверяется.
  */
 export function makeWriteGuard(cwd: string, allowedWritePaths: string[]): CanUseTool {
   return async (toolName, input) => {
+    if (READ_ONLY_TOOLS.has(toolName)) return { behavior: 'allow', updatedInput: input };
     const decision = decideWrite(cwd, allowedWritePaths, toolName, input);
     return decision.allow ? { behavior: 'allow', updatedInput: input } : { behavior: 'deny', message: decision.reason };
   };

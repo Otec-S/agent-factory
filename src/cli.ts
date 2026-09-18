@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
 import { createRunDir, runDirPaths } from './runDir.js';
 import { bootstrapWorkdir } from './workdir.js';
 import { StateStore } from './state.js';
@@ -11,6 +12,7 @@ import { triage } from './review/triage.js';
 import { buildUsage, writeUsage } from './usage.js';
 import { makeLogger } from './logger.js';
 import { parseArgs } from './args.js';
+import { loadDotEnv } from './env.js';
 import type { EvidenceValidation, Task, WorkerResult, Phase, TokenUsage } from './types.js';
 import type { LensRunnerResult } from './review/lensRunner.js';
 
@@ -78,6 +80,8 @@ async function runStage<T>(state: StateStore, phase: Phase, startStage: string, 
 }
 
 async function main(): Promise<void> {
+  const loadedEnv = loadDotEnv(path.resolve(process.cwd(), '.env'));
+  if (loadedEnv.length > 0) log.info(`.env: загружены ${loadedEnv.join(', ')}`);
   const args = parseArgs(process.argv.slice(2));
 
   let runDir: string;
